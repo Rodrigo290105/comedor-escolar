@@ -1,12 +1,15 @@
 import React, { useState, useEffect } from "react";
 import * as XLSX from "xlsx";
+import { onAuthStateChanged, signOut } from "firebase/auth";
+import { auth } from "./firebase";
+import Login from "./Login";
 
 export default function App() {
+  const [usuario, setUsuario] = useState(null);
   const [recetas, setRecetas] = useState([]);
   const [comensales, setComensales] = useState(0);
   const [resultado, setResultado] = useState([]);
   const [filtroDia, setFiltroDia] = useState("semana");
-  const [modoOscuro, setModoOscuro] = useState(true);
   const [menu, setMenu] = useState({
     lunes: { principal: "", acompanamiento: "", postre: "" },
     martes: { principal: "", acompanamiento: "", postre: "" },
@@ -15,6 +18,14 @@ export default function App() {
     viernes: { principal: "", acompanamiento: "", postre: "" },
   });
   const [nuevaReceta, setNuevaReceta] = useState({ nombre: "", tipo: "principal", ingredientes: [{ nombre: "", unidad: "g", cantidad: 0 }] });
+  const [recetaEditando, setRecetaEditando] = useState(null);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setUsuario(user);
+    });
+    return () => unsubscribe();
+  }, []);
 
   useEffect(() => {
     const recetasGuardadas = localStorage.getItem("recetas");
@@ -27,17 +38,6 @@ export default function App() {
     localStorage.setItem("recetas", JSON.stringify(recetas));
   }, [recetas]);
 
-  const estiloGeneral = {
-    backgroundColor: modoOscuro ? "#121212" : "#fefefe",
-    color: modoOscuro ? "#e0e0e0" : "#222",
-    padding: 30,
-    maxWidth: 900,
-    margin: "auto",
-    fontFamily: "Segoe UI",
-    borderRadius: 10,
-    boxShadow: modoOscuro ? "0 0 15px #000" : "0 0 10px #ccc"
-  };
-
   const calcularPedido = () => {
     const ingredientesTotales = {};
     const dias = filtroDia === "semana" ? Object.values(menu) : [menu[filtroDia]];
@@ -47,9 +47,12 @@ export default function App() {
         const receta = recetas.find(r => r.nombre === rec);
         if (receta) {
           receta.ingredientes.forEach(({ nombre, unidad, cantidad }) => {
-            const clave = `${nombre}-${unidad}`;
+            const clave = `${nombre.trim().toLowerCase()}-${unidad.trim().toLowerCase()}`;
             if (!ingredientesTotales[clave]) ingredientesTotales[clave] = 0;
-            const cantFinal = receta.tipo === "fruta" ? 1 : cantidad;
+
+            const esFruta = receta.tipo === "fruta" || ["banana", "manzana", "naranja", "pera", "mandarina", "ciruela"].includes(receta.nombre.toLowerCase());
+            const cantFinal = esFruta ? 1 : cantidad;
+
             ingredientesTotales[clave] += cantFinal * comensales;
           });
         }
@@ -58,7 +61,7 @@ export default function App() {
 
     const lista = Object.entries(ingredientesTotales).map(([clave, cantidad]) => {
       const [nombre, unidad] = clave.split("-");
-      if (nombre.toLowerCase() === "huevo" && unidad === "g") {
+      if (nombre === "huevo" && unidad === "g") {
         return { nombre: "Huevo", unidad: "unidad", cantidad: Math.ceil(cantidad / 45) };
       }
       return {
@@ -67,6 +70,7 @@ export default function App() {
         cantidad: cantidad >= 1000 ? cantidad / 1000 : cantidad
       };
     });
+
     setResultado(lista);
   };
 
@@ -77,35 +81,113 @@ export default function App() {
     XLSX.writeFile(wb, "pedido_comedor.xlsx");
   };
 
-  const handleAgregarReceta = () => {
-    setRecetas([...recetas, nuevaReceta]);
-    setNuevaReceta({ nombre: "", tipo: "principal", ingredientes: [{ nombre: "", unidad: "g", cantidad: 0 }] });
-  };
-
   const handleModificarIngrediente = (index, field, value) => {
-    const nueva = { ...nuevaReceta };
-    nueva.ingredientes[index][field] = field === "cantidad" ? Number(value) : value;
-    setNuevaReceta(nueva);
+    const receta = recetaEditando !== null ? { ...recetas[recetaEditando] } : { ...nuevaReceta };
+    receta.ingredientes[index][field] = field === "cantidad" ? Number(value) : value;
+    if (recetaEditando !== null) {
+      const nuevas = [...recetas];
+      nuevas[recetaEditando] = receta;
+      setRecetas(nuevas);
+    } else {
+      setNuevaReceta(receta);
+    }
   };
 
   const handleAgregarIngrediente = () => {
-    setNuevaReceta({ ...nuevaReceta, ingredientes: [...nuevaReceta.ingredientes, { nombre: "", unidad: "g", cantidad: 0 }] });
+    if (recetaEditando !== null) {
+      const nuevas = [...recetas];
+      nuevas[recetaEditando].ingredientes.push({ nombre: "", unidad: "g", cantidad: 0 });
+      setRecetas(nuevas);
+    } else {
+      setNuevaReceta({ ...nuevaReceta, ingredientes: [...nuevaReceta.ingredientes, { nombre: "", unidad: "g", cantidad: 0 }] });
+    }
+  };
+
+  const handleGuardarReceta = () => {
+    if (recetaEditando !== null) {
+      const nuevas = [...recetas];
+      nuevas[recetaEditando] = { ...recetas[recetaEditando] };
+      setRecetas(nuevas);
+      setRecetaEditando(null);
+    } else {
+      setRecetas([...recetas, nuevaReceta]);
+      setNuevaReceta({ nombre: "", tipo: "principal", ingredientes: [{ nombre: "", unidad: "g", cantidad: 0 }] });
+    }
+  };
+
+  const editarReceta = (index) => {
+    setRecetaEditando(index);
+    setNuevaReceta({ ...recetas[index] });
   };
 
   const eliminarReceta = (nombre) => {
     setRecetas(recetas.filter(r => r.nombre !== nombre));
+    if (recetaEditando !== null) setRecetaEditando(null);
   };
 
+  if (!usuario) {
+    return <Login onLogin={() => {}} />;
+  }
+
   return (
-    <div style={estiloGeneral}>
-      <h1 style={{ textAlign: "center", color: modoOscuro ? "#90caf9" : "#1a73e8" }}>🍽️ Comedor Escolar</h1>
+    <div style={{ padding: 20 }}>
+      <button onClick={() => signOut(auth)} style={{ float: "right" }}>🚪 Cerrar sesión</button>
 
-      <div style={{ marginBottom: 20, textAlign: "right" }}>
-        <label style={{ marginRight: 10 }}>🌙 Modo oscuro</label>
-        <input type="checkbox" checked={modoOscuro} onChange={() => setModoOscuro(!modoOscuro)} />
-      </div>
+      <h1>📋 Recetas</h1>
+      <input
+        placeholder="Nombre de la receta"
+        value={nuevaReceta.nombre}
+        onChange={(e) => setNuevaReceta({ ...nuevaReceta, nombre: e.target.value })}
+        style={{ marginRight: 10 }}
+      />
+      <select
+        value={nuevaReceta.tipo}
+        onChange={(e) => setNuevaReceta({ ...nuevaReceta, tipo: e.target.value })}
+      >
+        <option value="principal">Principal</option>
+        <option value="acompanamiento">Acompañamiento</option>
+        <option value="postre">Postre</option>
+        <option value="fruta">Fruta</option>
+      </select>
+      {nuevaReceta.ingredientes.map((ing, i) => (
+        <div key={i}>
+          <input
+            placeholder="Ingrediente"
+            value={ing.nombre}
+            onChange={(e) => handleModificarIngrediente(i, "nombre", e.target.value)}
+            style={{ marginRight: 5 }}
+          />
+          <input
+            placeholder="Unidad"
+            value={ing.unidad}
+            onChange={(e) => handleModificarIngrediente(i, "unidad", e.target.value)}
+            style={{ marginRight: 5 }}
+          />
+          <input
+            type="number"
+            placeholder="Cantidad"
+            value={ing.cantidad}
+            onChange={(e) => handleModificarIngrediente(i, "cantidad", e.target.value)}
+            style={{ marginRight: 5 }}
+          />
+        </div>
+      ))}
+      <button onClick={handleAgregarIngrediente}>➕ Añadir ingrediente</button>
+      <button onClick={handleGuardarReceta} style={{ marginLeft: 10 }}>💾 Guardar</button>
 
-      <div>
+      <h2 style={{ marginTop: 30 }}>📚 Recetas guardadas</h2>
+      <ul>
+        {recetas.map((r, i) => (
+          <li key={i}>
+            {r.nombre} ({r.tipo})
+            <button onClick={() => editarReceta(i)} style={{ marginLeft: 10 }}>📝 Editar</button>
+            <button onClick={() => eliminarReceta(r.nombre)} style={{ marginLeft: 5 }}>🗑️ Eliminar</button>
+          </li>
+        ))}
+      </ul>
+
+      <h2 style={{ marginTop: 40 }}>📅 Menú semanal</h2>
+      <div style={{ marginBottom: 20 }}>
         <label>📆 Ver pedido de:</label>
         <select value={filtroDia} onChange={(e) => setFiltroDia(e.target.value)} style={{ marginLeft: 10 }}>
           <option value="semana">Toda la semana</option>
@@ -115,27 +197,6 @@ export default function App() {
         </select>
       </div>
 
-      <fieldset style={{ marginTop: 20, padding: 10, border: "1px solid #ccc" }}>
-        <legend>➕ Agregar nueva receta</legend>
-        <input placeholder="Nombre de la receta" value={nuevaReceta.nombre} onChange={(e) => setNuevaReceta({ ...nuevaReceta, nombre: e.target.value })} />
-        <select value={nuevaReceta.tipo} onChange={(e) => setNuevaReceta({ ...nuevaReceta, tipo: e.target.value })} style={{ marginLeft: 10 }}>
-          <option value="principal">Principal</option>
-          <option value="acompanamiento">Acompañamiento</option>
-          <option value="postre">Postre</option>
-          <option value="fruta">Fruta</option>
-        </select>
-        {nuevaReceta.ingredientes.map((ing, i) => (
-          <div key={i} style={{ marginTop: 10 }}>
-            <input placeholder="Ingrediente" value={ing.nombre} onChange={(e) => handleModificarIngrediente(i, "nombre", e.target.value)} style={{ marginRight: 5 }} />
-            <input placeholder="Unidad" value={ing.unidad} onChange={(e) => handleModificarIngrediente(i, "unidad", e.target.value)} style={{ marginRight: 5 }} />
-            <input type="number" placeholder="Cantidad" value={ing.cantidad} onChange={(e) => handleModificarIngrediente(i, "cantidad", e.target.value)} />
-          </div>
-        ))}
-        <button onClick={handleAgregarIngrediente} style={{ marginTop: 10 }}>➕ Añadir ingrediente</button>
-        <button onClick={handleAgregarReceta} style={{ marginLeft: 10 }}>✅ Guardar receta</button>
-      </fieldset>
-
-      <h3 style={{ marginTop: 30 }}>📅 Menú semanal</h3>
       {Object.keys(menu).map((dia) => (
         <div key={dia} style={{ marginBottom: 10 }}>
           <strong>{dia.toUpperCase()}:</strong>
@@ -190,15 +251,6 @@ export default function App() {
           <button onClick={descargarExcel} style={{ marginTop: 10 }}>⬇️ Descargar Excel</button>
         </div>
       )}
-
-      <div style={{ marginTop: 40 }}>
-        <h3>📚 Recetas guardadas</h3>
-        <ul>
-          {recetas.map((r, i) => (
-            <li key={i}>{r.nombre} ({r.tipo}) <button onClick={() => eliminarReceta(r.nombre)}>🗑️ Eliminar</button></li>
-          ))}
-        </ul>
-      </div>
     </div>
   );
 }
